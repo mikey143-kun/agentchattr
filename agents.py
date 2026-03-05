@@ -29,7 +29,8 @@ class AgentTrigger:
             for name, info in instances.items()
         }
 
-    async def trigger(self, agent_name: str, message: str = "", channel: str = "general", **kwargs):
+    async def trigger(self, agent_name: str, message: str = "", channel: str = "general",
+                      job_id: int | None = None, **kwargs):
         """Write to the agent's queue file. The worker terminal picks it up."""
         queue_file = self._data_dir / f"{agent_name}_queue.jsonl"
         self._data_dir.mkdir(parents=True, exist_ok=True)
@@ -41,8 +42,13 @@ class AgentTrigger:
             "time": time.strftime("%H:%M:%S"),
             "channel": channel,
         }
+        custom_prompt = kwargs.get("prompt", "")
+        if isinstance(custom_prompt, str) and custom_prompt.strip():
+            entry["prompt"] = custom_prompt.strip()
+        if job_id is not None:
+            entry["job_id"] = job_id
 
         with open(queue_file, "a", encoding="utf-8") as f:
             f.write(json.dumps(entry) + "\n")
 
-        log.info("Queued @%s trigger (ch=%s): %s", agent_name, channel, message[:80])
+        log.info("Queued @%s trigger (ch=%s, job=%s): %s", agent_name, channel, job_id, message[:80])

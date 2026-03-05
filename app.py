@@ -17,6 +17,7 @@ from starlette.middleware.base import BaseHTTPMiddleware
 from store import MessageStore
 from decisions import DecisionStore
 from summaries import SummaryStore
+from jobs import JobStore
 from router import Router
 from agents import AgentTrigger
 from registry import RuntimeRegistry
@@ -29,6 +30,7 @@ app = FastAPI(title="agentchattr")
 store: MessageStore | None = None
 decisions: DecisionStore | None = None
 summaries: SummaryStore | None = None
+jobs: JobStore | None = None
 router: Router | None = None
 agents: AgentTrigger | None = None
 registry: RuntimeRegistry | None = None
@@ -212,7 +214,7 @@ def _install_security_middleware(token: str, cfg: dict):
 
 
 def configure(cfg: dict, session_token: str = ""):
-    global store, decisions, summaries, router, agents, registry, config
+    global store, decisions, summaries, jobs, router, agents, registry, config
     config = cfg
 
     # --- Security: store the session token and install middleware ---
@@ -236,6 +238,15 @@ def configure(cfg: dict, session_token: str = ""):
     decisions.on_change(_on_decision_change)
 
     summaries = SummaryStore(str(Path(data_dir) / "summaries.json"))
+
+    # Migrate legacy activities.json → jobs.json
+    jobs_path = Path(data_dir) / "jobs.json"
+    legacy_activities = Path(data_dir) / "activities.json"
+    if not jobs_path.exists() and legacy_activities.exists():
+        legacy_activities.rename(jobs_path)
+
+    jobs = JobStore(str(jobs_path))
+    jobs.on_change(_on_job_change)
 
     max_hops = cfg.get("routing", {}).get("max_agent_hops", 4)
 
@@ -447,7 +458,20 @@ def _on_decision_change(action: str, decision: dict):
             return
     except RuntimeError:
         pass
-    asyncio.run_coroutine_threadsafe(broadcast_decision(action, decision), _event_loop)
+
+
+def _on_job_change(action: str, data: dict):
+    """Called from any thread when a job changes."""
+    if _event_loop is None:
+        return
+    try:
+        loop = asyncio.get_running_loop()
+        if loop is _event_loop:
+            asyncio.ensure_future(broadcast_job(action, data))
+            return
+    except RuntimeError:
+        pass
+    asyncio.run_coroutine_threadsafe(broadcast_job(action, data), _event_loop)
 
 
 async def _handle_new_message(msg: dict):
@@ -673,6 +697,17 @@ async def broadcast_decision(action: str, decision: dict):
     ws_clients.difference_update(dead)
 
 
+async def broadcast_job(action: str, data: dict):
+    payload = json.dumps({"type": "job", "action": action, "data": data})
+    dead = set()
+    for client in list(ws_clients):
+        try:
+            await client.send_text(payload)
+        except Exception:
+            dead.add(client)
+    ws_clients.difference_update(dead)
+
+
 async def broadcast_hats():
     data = json.dumps({"type": "hats", "data": agent_hats})
     dead = set()
@@ -750,6 +785,9 @@ async def websocket_endpoint(websocket: WebSocket):
     # Send hats
     await websocket.send_text(json.dumps({"type": "hats", "data": agent_hats}))
 
+    # Send jobs
+    await websocket.send_text(json.dumps({"type": "jobs", "data": jobs.list_all()}))
+
     # Send pending instances (so late-connecting browsers still see the naming lightbox)
     if registry:
         for inst in registry.get_all().values():
@@ -816,7 +854,9 @@ async def websocket_endpoint(websocket: WebSocket):
                 reply_to = event.get("reply_to")
                 if reply_to is not None:
                     reply_to = int(reply_to)
-                store.add(sender, text, attachments=attachments, reply_to=reply_to, channel=channel)
+
+                store.add(sender, text, attachments=attachments, reply_to=reply_to,
+                          channel=channel)
 
             elif event.get("type") == "delete":
                 ids = event.get("ids", [])
@@ -1140,6 +1180,226 @@ async def delete_hat(agent_name: str):
     """Remove an agent's hat (called by the trash-can UI)."""
     clear_agent_hat(agent_name)
     return JSONResponse({"ok": True})
+
+
+# --- Jobs API ---
+
+@app.get("/api/jobs")
+async def get_jobs(channel: str = "", status: str = ""):
+    """List jobs, optionally filtered."""
+    ch = channel if channel else None
+    st = status if status else None
+    return jobs.list_all(channel=ch, status=st)
+
+
+@app.post("/api/messages/{msg_id}/demote")
+async def demote_proposal(msg_id: int):
+    """Demote a job_proposal message back to a regular chat message."""
+    msg = store.get_by_id(msg_id)
+    if not msg:
+        return JSONResponse({"error": "message not found"}, status_code=404)
+    if msg.get("type") != "job_proposal":
+        return JSONResponse({"error": "not a proposal"}, status_code=400)
+    # Convert proposal body to plain text, strip proposal metadata
+    meta = msg.get("metadata", {})
+    body_text = meta.get("body", "")
+    title = meta.get("title", "")
+    plain_text = f"**{title}**\n\n{body_text}" if title else body_text or msg.get("text", "")
+    updated = store.update_message(msg_id, {
+        "type": "chat",
+        "text": plain_text,
+        "metadata": {},
+    })
+    if updated:
+        # Broadcast the updated message to all clients
+        payload = json.dumps({"type": "edit", "message": updated})
+        dead = set()
+        for client in list(ws_clients):
+            try:
+                await client.send_text(payload)
+            except Exception:
+                dead.add(client)
+        ws_clients.difference_update(dead)
+    return updated or {"ok": True}
+
+
+@app.post("/api/trigger-agent")
+async def trigger_agent_silent(request: Request):
+    """Silently trigger an agent with a message (no chat message posted)."""
+    body = await request.json()
+    agent_name = body.get("agent", "").strip()
+    message = body.get("message", "").strip()
+    channel = body.get("channel", "general")
+    source_msg_id = body.get("source_msg_id")
+    if not agent_name or not message:
+        return JSONResponse({"error": "agent and message required"}, status_code=400)
+
+    custom_prompt = body.get("prompt", "").strip()
+    if not custom_prompt:
+        if source_msg_id is not None:
+            custom_prompt = (
+                f"mcp read #{channel} - you were mentioned, take appropriate action "
+                f"- conversion request: use chat history to find message #{source_msg_id} "
+                f"and use chat_propose_job to propose it as a job with title<=80 chars and body<=500 chars."
+            )
+        else:
+            custom_prompt = (
+                f"mcp read #{channel} - you were mentioned, take appropriate action "
+                f"- conversion request: use chat_propose_job to propose a job from the referenced message."
+            )
+    # Resolve to instances if multi-instance
+    targets = [agent_name]
+    if registry:
+        resolved = registry.resolve_to_instances(agent_name)
+        if resolved:
+            targets = resolved
+    for target in targets:
+        if agents.is_available(target):
+            await agents.trigger(target, message=message, channel=channel, prompt=custom_prompt)
+    return {"ok": True, "triggered": targets}
+
+
+@app.post("/api/jobs")
+async def create_job(request: Request):
+    """Create a new job."""
+    body = await request.json()
+    title = body.get("title", "").strip()
+    if not title:
+        return JSONResponse({"error": "title required"}, status_code=400)
+    job_type = body.get("type", "job")
+    channel = body.get("channel", "general")
+    created_by = body.get("created_by", "user")
+    anchor_msg_id = body.get("anchor_msg_id")
+    assignee = body.get("assignee", "")
+    job_body = body.get("body", "")
+    result = jobs.create(
+        title=title, job_type=job_type, channel=channel,
+        created_by=created_by, anchor_msg_id=anchor_msg_id,
+        assignee=assignee, body=job_body,
+    )
+    # Post breadcrumb in main timeline with job_id for clickable link
+    store.add(created_by, f"Job created: {title}", msg_type="job_created",
+              channel=channel, metadata={"job_id": result["id"]})
+    return result
+
+
+@app.patch("/api/jobs/{job_id}")
+async def update_job(job_id: int, request: Request):
+    """Update a job's status, title, or assignee."""
+    body = await request.json()
+    result = None
+    if "status" in body:
+        result = jobs.update_status(job_id, body["status"])
+    if "title" in body:
+        result = jobs.update_title(job_id, body["title"])
+    if "assignee" in body:
+        result = jobs.update_assignee(job_id, body["assignee"])
+    if result is None:
+        return JSONResponse({"error": "not found or invalid"}, status_code=404)
+    return result
+
+
+@app.post("/api/jobs/reorder")
+async def reorder_jobs(request: Request):
+    """Reorder jobs within a status group (globally, not per-channel)."""
+    body = await request.json()
+    status = body.get("status", "open")
+    ordered_ids = body.get("ordered_ids", [])
+    if not isinstance(ordered_ids, list) or len(ordered_ids) == 0:
+        return JSONResponse({"error": "ordered_ids required"}, status_code=400)
+    updated = jobs.reorder(status=status, ordered_ids=ordered_ids)
+    return {"ok": True, "updated": len(updated)}
+
+
+@app.get("/api/jobs/{job_id}/messages")
+async def get_job_messages(job_id: int):
+    """Get all messages in a job."""
+    msgs = jobs.get_messages(job_id)
+    if msgs is None:
+        return JSONResponse({"error": "not found"}, status_code=404)
+    return msgs
+
+
+@app.post("/api/jobs/{job_id}/messages")
+async def post_job_message(job_id: int, request: Request):
+    """Post a message to a job."""
+    body = await request.json()
+    text = body.get("text", "").strip()
+    sender = body.get("sender", "user")
+    attachments = body.get("attachments", [])
+    if not text and not attachments:
+        return JSONResponse({"error": "text or attachments required"}, status_code=400)
+    msg_type = body.get("type", "chat")
+    msg = jobs.add_message(job_id, sender, text,
+                           attachments=attachments, msg_type=msg_type)
+    if msg is None:
+        return JSONResponse({"error": "job not found"}, status_code=404)
+
+    # Route @mentions in job messages to agents (with job_id context)
+    job = jobs.get(job_id)
+    if job:
+        channel = job.get("channel", "general")
+        raw_targets = router.get_targets(sender, text, channel)
+        targets = []
+        for t in raw_targets:
+            if registry:
+                targets.extend(registry.resolve_to_instances(t))
+            else:
+                targets.append(t)
+        targets = list(dict.fromkeys(targets))
+
+        import mcp_bridge
+        chat_msg = f"{sender}: {text}" if text else ""
+        for target in targets:
+            if registry:
+                inst = registry.get_instance(target)
+                if inst and inst.get("state") == "pending":
+                    continue
+            if agents.is_available(target):
+                await agents.trigger(target, message=chat_msg, channel=channel,
+                                     job_id=job_id)
+
+    return msg
+
+
+@app.post("/api/jobs/{job_id}/messages/{msg_index}/resolve")
+async def resolve_job_message(job_id: int, msg_index: int, request: Request):
+    """Resolve a suggestion message (accept/dismiss)."""
+    body = await request.json()
+    resolution = body.get("resolution", "dismissed")
+    job = jobs.get(job_id)
+    if not job:
+        return JSONResponse({"error": "not found"}, status_code=404)
+    msgs = job.get("messages", [])
+    if msg_index < 0 or msg_index >= len(msgs):
+        return JSONResponse({"error": "invalid message index"}, status_code=400)
+    msg = msgs[msg_index]
+    msg["resolved"] = resolution
+    jobs._save()
+
+    # If accepted, trigger the suggesting agent with context
+    if resolution == "accepted" and msg.get("sender"):
+        agent_name = msg["sender"]
+        channel = job.get("channel", "general")
+        if agents.is_available(agent_name):
+            await agents.trigger(agent_name,
+                                 message=f"Your suggestion was accepted: {msg.get('text', '')}",
+                                 channel=channel, job_id=job_id)
+
+    return {"ok": True, "resolution": resolution}
+
+
+@app.delete("/api/jobs/{job_id}")
+async def delete_job(job_id: int, request: Request):
+    """Delete or archive a job. ?permanent=true for real delete."""
+    permanent = request.query_params.get("permanent", "").lower() == "true"
+    if permanent:
+        result = jobs.delete(job_id)
+    else:
+        result = jobs.update_status(job_id, "archived")
+    if result is None:
+        return JSONResponse({"error": "not found"}, status_code=404)
+    return result
 
 
 @app.get("/api/roles")

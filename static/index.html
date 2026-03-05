@@ -4,7 +4,7 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>agentchattr</title>
-    <link rel="stylesheet" href="/static/style.css?v=34">
+    <link rel="stylesheet" href="/static/style.css?v=86">
     <link rel="icon" href="/static/favicon.ico">
 </head>
 <body>
@@ -21,6 +21,13 @@
             </div>
             <div class="header-right">
                 <div id="agent-status"></div>
+                <button class="settings-btn" id="jobs-toggle" onclick="toggleJobsPanel()" title="Jobs">
+                    <svg width="16" height="16" viewBox="0 0 16 16" fill="none">
+                        <rect x="3" y="2" width="10" height="12" rx="1.5" stroke="currentColor" stroke-width="1.2"/>
+                        <path d="M6 5h4M6 8h4M6 11h2" stroke="currentColor" stroke-width="1.2" stroke-linecap="round"/>
+                    </svg>
+                    <span class="jobs-badge hidden" id="jobs-badge">0</span>
+                </button>
                 <button class="settings-btn" id="decisions-toggle" onclick="toggleDecisionsPanel()" title="Decisions">
                     <svg width="16" height="16" viewBox="0 0 16 16" fill="none">
                         <rect x="2" y="2" width="12" height="12" rx="2" stroke="currentColor" stroke-width="1.2"/>
@@ -107,6 +114,44 @@
                     <span class="typing-name"></span> is thinking...
                 </div>
             </main>
+            <aside id="jobs-panel" class="hidden">
+                <div class="jobs-grip" id="jobs-grip"></div>
+                <div id="jobs-list-view">
+                    <div class="jobs-header">
+                        <span>Jobs</span>
+                        <button class="jobs-create-btn" onclick="showCreateJob()" title="Start Job">+</button>
+                    </div>
+                    <div id="jobs-list"></div>
+                </div>
+                <div id="jobs-conversation-view" class="hidden">
+                    <div class="jobs-conv-header">
+                        <button class="jobs-back-btn" onclick="jobsBack()" title="Back">&larr;</button>
+                        <span class="jobs-conv-title" id="jobs-conv-title"></span>
+                        <div class="jobs-status-toggles" id="jobs-status-toggles">
+                            <button class="job-toggle open" data-status="open" onclick="toggleJobStatus('open')" title="To Do">TO DO</button>
+                            <button class="job-toggle done" data-status="done" onclick="toggleJobStatus('done')" title="Active">ACTIVE</button>
+                            <button class="job-toggle archived" data-status="archived" onclick="toggleJobStatus('archived')" title="Closed">CLOSED</button>
+                        </div>
+                    </div>
+                    <div class="jobs-conv-messages" id="jobs-conv-messages"></div>
+                    <div class="jobs-conv-input">
+                        <div id="job-mention-menu" class="mention-menu hidden"></div>
+                        <div id="job-attachments" class="job-attachments"></div>
+                        <div class="job-reply-target-row hidden" id="job-reply-target-row">
+                            <button class="job-reply-target-btn" id="job-reply-target-btn" type="button" onclick="cycleJobReplyTarget()" title="Reply target">
+                                <span class="job-reply-target-prefix">To</span>
+                                <span class="job-reply-target-dot" id="job-reply-target-dot"></span>
+                                <span class="job-reply-target-name" id="job-reply-target-name"></span>
+                            </button>
+                            <button class="job-reply-target-clear hidden" id="job-reply-target-clear" type="button" onclick="clearJobReplyTarget(event)" title="Clear reply target" aria-label="Clear reply target">&times;</button>
+                        </div>
+                        <div class="job-input-row">
+                            <textarea id="jobs-conv-input-text" placeholder="Message..." rows="1"></textarea>
+                            <button onclick="sendJobMessage()">Send</button>
+                        </div>
+                    </div>
+                </div>
+            </aside>
             <aside id="decisions-panel" class="hidden">
                 <div class="decisions-grip" id="decisions-grip"></div>
                 <div class="decisions-header">
@@ -158,7 +203,6 @@
     </div>
 
     <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
-    <script src="/static/chat.js?v=32"></script>
+    <script src="/static/chat.js?v=86"></script>
 </body>
 </html>
-

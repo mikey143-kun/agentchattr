@@ -20,6 +20,7 @@ log = logging.getLogger(__name__)
 store = None
 decisions = None
 summaries = None
+jobs = None  # set by run.py — JobStore instance
 room_settings = None  # set by run.py — dict with "channels" list etc.
 registry = None       # set by run.py — RuntimeRegistry instance
 config = None         # set by run.py — full config.toml dict
@@ -96,7 +97,19 @@ _MCP_INSTRUCTIONS = (
     "- The channel has had 20+ messages since the last summary\n"
     "Do NOT update the summary mid-conversation, after trivial exchanges, or when another agent just updated it. "
     "Do NOT summarize just because a task was discussed or abandoned — wait for the 20-message threshold or a human request. "
-    "Keep summaries factual and concise (under 150 words) — focus on decisions made, tasks completed, and open questions."
+    "Keep summaries factual and concise (under 150 words) — focus on decisions made, tasks completed, and open questions.\n\n"
+    "Jobs are bounded work conversations — like Slack threads with status tracking. "
+    "When you are triggered with job_id=N, use chat_read(job_id=N) to read the job conversation, "
+    "then use chat_send(job_id=N, message='...') to reply within it. "
+    "Job conversations are separate from the main timeline — your response should go to the job, not the channel.\n\n"
+    "CRITICAL — Proposing Jobs:\n"
+    "Agents must ONLY propose jobs using chat_propose_job when explicitly asked by the user, OR when the request is a clearly 'scoped task'. "
+    "A task is scoped if it has: 1) Concrete outcome, 2) Specific boundary, 3) Clear done criteria, 4) Explicit owner/intention, and 5) Appropriate size. "
+    "If these 5 checks do not pass, do NOT propose a job; instead, reply in chat to ask for clarification. "
+    "This prevents over-use of the jobs feature for vague requests.\n\n"
+    "To post a suggestion (Accept/Dismiss card) in a job, prefix your message with [suggestion]: "
+    "chat_send(job_id=N, message='[suggestion] I recommend we refactor the auth module'). "
+    "The human can Accept (triggers you with context) or Dismiss."
 )
 
 # --- Tool implementations (shared between both servers) ---
@@ -172,12 +185,14 @@ def chat_send(
     image_path: str = "",
     reply_to: int = -1,
     channel: str = "general",
+    job_id: int = 0,
     ctx: Context | None = None,
 ) -> str:
     """Send a message to the agentchattr chat. Use your name as sender (claude/codex/user).
     Optionally attach a local image by providing image_path (absolute path).
     Optionally reply to a message by providing reply_to (message ID).
-    Optionally specify a channel (default: 'general')."""
+    Optionally specify a channel (default: 'general').
+    Optionally specify a job_id to post into a job conversation instead of the main timeline."""
     sender, err = _resolve_tool_identity(sender, ctx, field_name="sender", required=True)
     if err:
         return err
@@ -196,6 +211,40 @@ def chat_send(
         return f"Error: sender '{sender}' is not registered. Call chat_claim(sender=your_base_name) to get your identity."
     if not message.strip() and not image_path:
         return "Empty message, not sent."
+
+    # Job-scoped send: post into a job conversation instead of main timeline
+    if job_id and jobs:
+        # Detect suggestion type from [suggestion] prefix
+        text = message.strip()
+        msg_type = "chat"
+        if text.lower().startswith("[suggestion]"):
+            msg_type = "suggestion"
+            text = text[len("[suggestion]"):].strip()
+        # Handle image attachment for job messages
+        job_attachments = None
+        if image_path:
+            import shutil, uuid
+            src = Path(image_path)
+            if not src.exists():
+                return f"Image not found: {image_path}"
+            if src.suffix.lower() not in ('.png', '.jpg', '.jpeg', '.gif', '.webp', '.bmp', '.svg'):
+                return f"Unsupported image type: {src.suffix}"
+            raw_dir = "./uploads"
+            if config and "images" in config:
+                raw_dir = config["images"].get("upload_dir", raw_dir)
+            upload_dir = Path(raw_dir)
+            upload_dir.mkdir(parents=True, exist_ok=True)
+            filename = f"{uuid.uuid4().hex[:8]}{src.suffix}"
+            shutil.copy2(str(src), str(upload_dir / filename))
+            job_attachments = [{"name": src.name, "url": f"/uploads/{filename}"}]
+        msg = jobs.add_message(job_id, sender, text, msg_type=msg_type,
+                               attachments=job_attachments)
+        if msg is None:
+            return f"Error: job #{job_id} not found."
+        with _presence_lock:
+            _presence[sender] = time.time()
+        return f"Sent to job #{job_id} (msg_id={msg['id']})" + (
+            " [suggestion]" if msg_type == "suggestion" else "")
 
     attachments = []
     if image_path:
@@ -223,11 +272,67 @@ def chat_send(
     if reply_id is not None and store.get_by_id(reply_id) is None:
         return f"Message #{reply_to} not found."
 
-    msg = store.add(sender, message.strip(), attachments=attachments, reply_to=reply_id, channel=channel)
+    msg = store.add(sender, message.strip(), attachments=attachments,
+                    reply_to=reply_id, channel=channel)
     _update_cursor(sender, [msg], channel)
     with _presence_lock:
         _presence[sender] = time.time()
     return f"Sent (id={msg['id']})"
+
+
+def chat_propose_job(
+    sender: str,
+    title: str,
+    body: str = "",
+    channel: str = "general",
+    ctx: Context | None = None,
+) -> str:
+    """Propose a job for human approval. Posts a proposal card in the timeline.
+    The human can Accept (creates the job) or Dismiss. Agents must NOT create jobs
+    directly — always propose and let the human decide.
+
+    Args:
+        title: Short job title (max 80 chars)
+        body: Detailed description of the work (max 1000 chars)
+        channel: Channel to post the proposal in
+    """
+    sender, err = _resolve_tool_identity(sender, ctx, field_name="sender", required=True)
+    if err:
+        return err
+    if not title.strip():
+        return "Error: title is required."
+    title = title.strip()[:80]
+    body = (body or "").strip()[:1000]
+
+    msg = store.add(
+        sender, f"Job proposal: {title}",
+        msg_type="job_proposal",
+        channel=channel,
+        metadata={"title": title, "body": body, "status": "pending"},
+    )
+    _update_cursor(sender, [msg], channel)
+    with _presence_lock:
+        _presence[sender] = time.time()
+    return f"Proposed job (msg_id={msg['id']}): {title}"
+
+
+def _resolve_attachments(attachments: list[dict]) -> list[dict]:
+    """Add absolute file_path to attachments so agents can read images."""
+    if not attachments:
+        return attachments
+    raw_dir = "./uploads"
+    if config and "images" in config:
+        raw_dir = config["images"].get("upload_dir", raw_dir)
+    upload_dir = Path(raw_dir).resolve()
+    resolved = []
+    for att in attachments:
+        a = dict(att)
+        url = a.get("url", "")
+        if url.startswith("/uploads/"):
+            filename = url.split("/")[-1]
+            a["file_path"] = str(upload_dir / filename)
+        resolved.append(a)
+    return resolved
 
 
 def _serialize_messages(msgs: list[dict]) -> str:
@@ -243,7 +348,7 @@ def _serialize_messages(msgs: list[dict]) -> str:
             "channel": m.get("channel", "general"),
         }
         if m.get("attachments"):
-            entry["attachments"] = m["attachments"]
+            entry["attachments"] = _resolve_attachments(m["attachments"])
         if m.get("reply_to") is not None:
             entry["reply_to"] = m["reply_to"]
         out.append(entry)
@@ -385,6 +490,7 @@ def chat_read(
     since_id: int = 0,
     limit: int = 20,
     channel: str = "",
+    job_id: int = 0,
     ctx: Context | None = None,
 ) -> str:
     """Read chat messages. Returns JSON array with: id, sender, text, type, time, channel.
@@ -394,10 +500,30 @@ def chat_read(
     - Subsequent calls with same sender: returns only NEW messages since last read.
     - Pass since_id to override and read from a specific point.
     - Omit sender to always get the last `limit` messages (no cursor).
-    - Pass channel to filter by channel name (default: all channels)."""
+    - Pass channel to filter by channel name (default: all channels).
+    - Pass job_id to read messages from a specific job."""
     sender, err = _resolve_tool_identity(sender, ctx, field_name="sender", required=False)
     if err:
         return err
+
+    # Job-scoped read: return messages from the job store
+    if job_id and jobs:
+        msgs = jobs.get_messages(job_id)
+        if msgs is None:
+            return f"Error: job #{job_id} not found."
+        out = []
+        for m in msgs:
+            entry = {"id": m["id"], "sender": m["sender"], "text": m["text"],
+                     "time": m.get("time", ""), "job_id": job_id}
+            if m.get("attachments"):
+                entry["attachments"] = _resolve_attachments(m["attachments"])
+            if m.get("type"):
+                entry["type"] = m["type"]
+            if m.get("resolved"):
+                entry["resolved"] = m["resolved"]
+            out.append(entry)
+        return json.dumps(out, ensure_ascii=False) if out else "No messages in this job yet."
+
     ch = channel if channel else None
     if since_id:
         msgs = store.get_since(since_id, channel=ch)
@@ -483,7 +609,6 @@ def chat_join(name: str, channel: str = "general", ctx: Context | None = None) -
     # Block unregistered agent names (stale identity from resumed session)
     if registry and registry.is_agent_family(name) and not registry.is_registered(name):
         return f"Error: '{name}' is not registered. Call chat_claim(sender=your_base_name) to get your identity."
-    # Only post join to general — don't spam topic channels
     store.add(name, f"{name} is online", msg_type="join", channel="general")
     online = _get_online()
     return f"Joined. Online: {', '.join(online)}"
@@ -675,7 +800,7 @@ def chat_summary(
 
 _ALL_TOOLS = [
     chat_send, chat_read, chat_resync, chat_join, chat_who, chat_decision,
-    chat_channels, chat_set_hat, chat_claim, chat_summary,
+    chat_channels, chat_set_hat, chat_claim, chat_summary, chat_propose_job,
 ]
 
 
