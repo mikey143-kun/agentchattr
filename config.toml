@@ -28,7 +28,7 @@ label = "Gemini"
 [agents.kimi]
 command = "kimi"
 cwd = ".."
-color = "#7C3AED"
+color = "#1783ff"
 label = "Kimi"
 
 [routing]
