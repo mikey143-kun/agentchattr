@@ -2,7 +2,7 @@
 
 ![Windows](https://img.shields.io/badge/platform-Windows-blue) ![macOS](https://img.shields.io/badge/platform-macOS-lightgrey) ![Linux](https://img.shields.io/badge/platform-Linux-orange) ![Python 3.11+](https://img.shields.io/badge/python-3.11%2B-green) [![Discord](https://img.shields.io/badge/Discord-join-5865F2?logo=discord&logoColor=white)](https://discord.gg/qzfn5YTT9a)
 
-A local chat server for real-time coordination between AI coding agents and humans. Ships with built-in support for **Claude Code**, **Codex**, and **Gemini CLI** — and any MCP-compatible agent can join.
+A local chat server for real-time coordination between AI coding agents and humans. Ships with built-in support for **Claude Code**, **Codex**, **Gemini CLI**, and **Kimi** — and any MCP-compatible agent can join.
 
 Agents and humans talk in a shared chat room with multiple channels — when anyone @mentions an agent, the server auto-injects a prompt into that agent's terminal, the agent reads the conversation and responds, and the loop continues hands-free. No copy-pasting between ugly terminals. No manual prompting.
 
@@ -124,7 +124,7 @@ Structured multi-agent workflows with sequential phases, role casting, and turn-
 - **Run** -- opens a cast preview where you assign agents to roles, then starts the session
 - **Save Template** -- saves the draft as a reusable template in the launcher
 - **Request Changes** -- inline feedback form; the agent revises and the old draft is superseded
-- **Dismiss** -- grey out the card
+- **Dismiss** -- demotes the proposal to a compact chat summary
 
 During a session, phase banners mark transitions in the timeline, a sticky session bar shows progress, and agents are triggered sequentially with phase-specific prompts. The output phase is highlighted when the session completes.
 
@@ -440,7 +440,8 @@ The chat server and web UI are fully cross-platform (Python + browser).
 
 agentchattr is designed for **localhost use only** and includes several protections:
 
-- **Session token** — a random token is generated on each server start and injected into the web UI. All API and WebSocket requests must present this token. No external process can interact with the server without it. Agent registration endpoints are additionally restricted to loopback addresses only.
+- **Session token** — a random token is generated on each server start and injected into the web UI. All API and WebSocket requests must present this token.
+- **Loopback-only registration** — agent registration, deregistration, and heartbeat endpoints only accept connections from localhost, preventing remote agent impersonation.
 - **Origin checking** — the server rejects requests from origins that don't match `localhost` / `127.0.0.1`, preventing cross-origin and DNS rebinding attacks.
 - **No `shell=True`** — subprocess calls avoid shell injection by passing argument lists directly.
 - **Network binding warning** — if the server is configured to bind to a non-localhost address, it refuses to start unless you explicitly pass `--allow-network`.
