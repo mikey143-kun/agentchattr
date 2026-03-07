@@ -50,6 +50,7 @@ window._messageRenderers['job_created'] = function (el, msg) {
     const actId = msg.metadata?.job_id;
     if (actId && !jobsData.some(a => a.id === actId)) {
         el.style.display = 'none';
+        el.dataset.hiddenReason = 'no-job-data';
     }
     if (actId) {
         el.innerHTML = `<span class="job-breadcrumb-link" onclick="openJobFromBreadcrumb(${actId})" title="Open job">
@@ -68,14 +69,17 @@ function _unhideResolvedBreadcrumbs() {
     // After jobsData is populated (e.g. from WS 'jobs' event), unhide any
     // breadcrumbs that were hidden during history replay because jobsData
     // was still empty when the job_created message was rendered.
+    // Only targets elements with data-hidden-reason="no-job-data" to avoid
+    // unhiding off-channel breadcrumbs hidden by the channel filter.
     const validIds = new Set(jobsData.map(a => a.id));
-    document.querySelectorAll('.job-breadcrumb[style*="display: none"]').forEach(el => {
+    document.querySelectorAll('.job-breadcrumb[data-hidden-reason="no-job-data"]').forEach(el => {
         const link = el.querySelector('.job-breadcrumb-link');
         if (!link) return;
         const onclick = link.getAttribute('onclick') || '';
         const m = onclick.match(/openJobFromBreadcrumb\((\d+)\)/);
         if (m && validIds.has(Number(m[1]))) {
             el.style.display = '';
+            delete el.dataset.hiddenReason;
         }
     });
 }
