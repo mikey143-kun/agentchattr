@@ -498,10 +498,16 @@ header h1 {
     background: var(--error-soft);
 }
 
-/* Support button — far right of channel bar */
-.channel-support {
+/* Right-side pills in channel bar */
+.channel-bar-right {
     position: absolute;
     right: 16px;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+}
+
+.channel-support {
     color: #f472b6;
     font-size: 11px;
     font-weight: 600;
@@ -517,6 +523,50 @@ header h1 {
 .channel-support:hover {
     background: rgba(244, 114, 182, 0.14);
     box-shadow: 0 0 8px rgba(244, 114, 182, 0.15);
+}
+
+/* Update available pill */
+.update-pill {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    color: var(--info);
+    font-size: 11px;
+    font-weight: 600;
+    text-decoration: none;
+    white-space: nowrap;
+    padding: 3px 10px;
+    border: 1px solid color-mix(in srgb, var(--info) 35%, transparent);
+    border-radius: 10px;
+    background: color-mix(in srgb, var(--info) 6%, transparent);
+    transition: background 0.15s, box-shadow 0.15s;
+}
+
+.update-pill:hover {
+    background: color-mix(in srgb, var(--info) 14%, transparent);
+    box-shadow: 0 0 8px color-mix(in srgb, var(--info) 15%, transparent);
+}
+
+.update-pill .update-dismiss {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 14px;
+    height: 14px;
+    border: none;
+    background: none;
+    color: inherit;
+    opacity: 0.5;
+    cursor: pointer;
+    padding: 0;
+    font-size: 13px;
+    line-height: 1;
+    transition: opacity 0.15s;
+}
+.update-pill.hidden { display: none; }
+
+.update-pill .update-dismiss:hover {
+    opacity: 1;
 }
 
 /* --- Content area (timeline + rules sidebar) --- */
